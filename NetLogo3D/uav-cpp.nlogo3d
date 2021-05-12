@@ -1,0 +1,2964 @@
+patches-own[ Blockid typeid disaster cost state g-distance ]
+
+breed [ data-points data-point ]
+breed [ waypoints waypoint ]
+breed [ uavs uav ]
+breed [ markers marker ]
+breed [ genomes genome ]
+breed [ user-genomes user-genome ]
+breed [ centroids centroid ]
+
+uavs-own [ my-path
+           my-winner
+           my-loser
+           my-wp-number
+           total-distance
+           execute-value
+         ]
+
+waypoints-own [ visited ]
+data-points-own [ visited membership distributed role ]
+
+genomes-own [ wppath
+              wpdistance
+              wptime
+              wpfitness
+              last-wpx
+              last-wpy
+              last-wpz
+              uav-parent
+            ]
+
+user-genomes-own [ wppath
+                   wpdistance
+                   wpfitness
+                   last-wpx
+                   last-wpy
+                   last-wpz
+                 ]
+
+globals [ Globalid
+          glb-min-fitness
+          glb-min-path
+          winner
+          loser
+          user-path-value
+          shortest-path
+          any-centroids-moved?
+          best1
+          best2
+          best3
+          best4
+          best5
+          time1
+          time2
+          time3
+          time4
+          time5
+          time
+]
+
+;=====================================================================================================
+;========================================== SETUP THE CITY ===========================================
+;=====================================================================================================
+
+to setup-city
+  clear-all
+  let x max-pxcor
+  let y max-pycor
+  let z min-pzcor
+
+  ask patches [ set disaster false ]
+  ask patches [ ifelse pzcor = z [ set typeid "ground" set Blockid 0 ] [ set typeid "air" set Blockid 5000 ] ]
+  ask patches with [ typeid = "ground" ] [ set pcolor green - 1 ]
+  set Globalid 0
+  random-seed seed
+
+;==================================================== road section =======================================================
+
+  ask patches with [ pxcor >= -1 and pxcor <= 1 and typeid = "ground" ] [ set pcolor gray set Blockid 5000 ]
+  ask patches with [ pycor >= -1 and pycor <= 1 and typeid = "ground" ] [ set pcolor gray set Blockid 5000 ]
+  ask patches with [ pxcor >= (x - 2) or pxcor <= (2 - x) or pycor >= (y - 2) or pycor <= (2 - y) and typeid = "ground" ] [ set pcolor gray set Blockid 5000 ]
+  ask patches with [ pxcor = x or pxcor = (- x) or pycor = y or pycor = (- y) and typeid = "ground" ] [ set pcolor blue set Blockid 5000 set typeid "void" ]
+  block-div Globalid x (- x) y (- y) 0 true
+  block-div [ Blockid ] of min-one-of patches [ Blockid ] x 0 y (- y) 0 false
+  block-div [ Blockid ] of min-one-of patches [ Blockid ] 0 (- x) y (- y) 0 false
+
+  let x-roads x / 5
+  let minus (- 1)
+  let x-random 0
+
+  while [ x-roads > 0 ]
+  [ ifelse minus < 0 [ set x-random x-random * (- 1) + 5 + random 3 ] [ set x-random x-random * (- 1) - 1 + random 3 ]
+    ask patches with [ Blockid < 5000 and pxcor = x-random ] [ set pcolor gray ]
+    let blist sort [ Blockid ] of patches with [ Blockid != 5000 and pcolor = gray ]
+    while [ length blist > 0 ]
+    [ block-div first blist
+      1 + [ pxcor ] of max-one-of patches with [ Blockid = first blist ] [ pxcor ]
+      -1 + [ pxcor ] of min-one-of patches with [ Blockid = first blist ] [ pxcor ]
+      1 + [ pycor ] of max-one-of patches with [ Blockid = first blist ] [ pycor ]
+      -1 + [ pycor ] of min-one-of patches with [ Blockid = first blist ] [ pycor ]
+      x-random
+      true
+      set blist remove first blist blist
+    ]
+    ask patches with [ pcolor = gray ] [ set Blockid 5000 ]
+    set x-roads x-roads - 1
+    set minus minus * (- 1)
+  ]
+
+  let y-roads y / 5
+  set minus (- 1)
+  let y-random 0
+
+  while [ y-roads > 0 ]
+  [ ifelse minus < 0 [ set y-random y-random * (- 1) + 10 + random 3 ] [ set y-random y-random * (- 1) - 1 + random 3 ]
+    ask patches with [ Blockid < 5000 and pycor = y-random ] [ set pcolor gray ]
+    let blist sort [ Blockid ] of patches with [ Blockid != 5000 and pcolor = gray ]
+    while [ length blist > 0 ]
+    [ block-div first blist
+      1 + [ pxcor ] of max-one-of patches with [ Blockid = first blist ] [ pxcor ]
+      -1 + [ pxcor ] of min-one-of patches with [ Blockid = first blist ] [ pxcor ]
+      1 + [ pycor ] of max-one-of patches with [ Blockid = first blist ] [ pycor ]
+      -1 + [ pycor ] of min-one-of patches with [ Blockid = first blist ] [ pycor ]
+      y-random
+      false
+      set blist remove first blist blist
+    ]
+    ask patches with [ pcolor = gray ] [ set Blockid 5000 ]
+    set y-roads y-roads - 1
+    set minus minus * (- 1)
+  ]
+
+
+;================================================= block dividing section ================================================
+
+  let minid 0
+  while [ minid < ( max-pxcor * max-pycor * 4) ]
+  [ set minid [ Blockid ] of min-one-of patches [ Blockid ]
+    if minid = 5000 [ stop ]
+    ifelse count patches with [ Blockid = minid ] >= 11
+    [ let mxpx 1 + [ pxcor ] of max-one-of patches with [ Blockid = minid ] [ pxcor ]
+      let mipx -1 + [ pxcor ] of min-one-of patches with [ Blockid = minid] [ pxcor ]
+      let mxpy 1 + [ pycor ] of max-one-of patches with [ Blockid = minid] [ pycor ]
+      let mipy -1 + [ pycor ] of min-one-of patches with [ Blockid = minid] [ pycor ]
+      ifelse (mxpx - mipx) > (mxpy - mipy)
+      [ block-div minid
+        1 + mxpx
+        -1 + mipx
+        1 + mxpy
+        -1 + mipy
+        random-normal ( ( mxpx + mipx ) / 2 ) 1
+        true
+      ]
+      [ block-div minid
+        1 + mxpx
+        -1 + mipx
+        1 + mxpy
+        -1 + mipy
+        random-normal ( ( mxpy + mipy ) / 2 ) 1
+        false
+      ]
+    ]
+    [ ask patches with [ Blockid = minid ] [ set Blockid Globalid + 1 ]
+      set Globalid Globalid + 1
+    ]
+  ]
+
+
+;==================================================== building section ===================================================
+
+  let buills sort [ Blockid ] of patches with [ Blockid < 5000 ]
+  let buildings-count 0
+  while [ length buills > 0 ]
+  [ building first buills
+    set buills remove first buills buills
+    set buildings-count buildings-count + 1
+  ]
+  show buildings-count
+
+  ask patch launch-xcor launch-ycor z [set pcolor green - 2] ;スタート地点を濃い緑に
+
+  let dlist [ Blockid ] of patches with [ Blockid < 5000 ]
+  let d 0
+  loop
+  [ let id first shuffle dlist
+    ask patches with [ Blockid = id and typeid = "building"] [ set pcolor [ pcolor ] of self - 7 set disaster true]
+    set dlist remove id dlist
+    set d d + 1
+    if d = disaster-area [ stop ]
+  ]
+end
+
+;=========================================================================================================================
+
+to block-div [ id mxpx mipx mxpy mipy road x? ]
+  ifelse x? = true
+  [ let c ( one-of base-colors ) + 4
+    ask patches with [ Blockid = id and pxcor < mxpx and pxcor > road and pycor > mipy and pycor < mxpy ] [ set Blockid Globalid + 1 set pcolor c ]
+    set c ( one-of base-colors ) + 4
+    ask patches with [ Blockid = id and pxcor < road and pxcor > mipx and pycor > mipy and pycor < mxpy ] [ set Blockid Globalid + 2 set pcolor c ]
+    set Globalid Globalid + 2
+  ]
+  [ let c ( one-of base-colors ) + 4
+    ask patches with [ Blockid = id and pxcor < mxpx and pxcor > mipx and pycor > road and pycor < mxpy ] [ set Blockid Globalid + 1 set pcolor c ]
+    set c ( one-of base-colors ) + 4
+    ask patches with [ Blockid = id and pxcor < mxpx and pxcor > mipx and pycor > mipy and pycor < road ] [ set Blockid Globalid + 2 set pcolor c ]
+    set Globalid Globalid + 2
+  ]
+
+end
+
+;=========================================================================================================================
+
+to building [ id ]
+
+  let height ( 1 + 0.5 * random count patches with [ Blockid = id ] )
+  let c [ pcolor ] of patches with [ Blockid = id ]
+
+  while [ height > 0 ]
+  [ ask patches with [ Blockid = id and pzcor = min-pzcor ]
+    [ ask patch-at 0 0 height
+      [ set pcolor first c - (height * 0.2)
+        set Blockid id
+        set typeid "building"
+      ]
+    ]
+    set height height - 1
+  ]
+
+end
+
+;=====================================================================================================
+;========================================= CREATE WAYPOINT ===========================================
+;=====================================================================================================
+
+to setup-waypoints
+
+  random-seed new-seed
+  set-default-shape data-points "circle"
+  set-default-shape centroids "x"
+  set-default-shape links "path"
+
+  ask patches with [ disaster = true ]
+  [ if any? patches with [ typeid = "air" ] in-radius 2.5
+    [ let wp patches with [ typeid = "air" ] in-radius 2.5
+      ask wp [ set typeid "waypoint" ]
+    ]
+  ]
+
+  ask patches with [ typeid = "waypoint" ]
+  [ sprout-data-points 1
+    [ set size 0.2
+      hatch-data-points 1 [ set heading 0 fd 0.5 ]
+      hatch-data-points 1 [ set heading 90 fd 0.5 ]
+      hatch-data-points 1 [ set heading 45 fd 0.5 * sqrt 2 ]
+    ]
+  ]
+
+  ask data-points
+  [ let minpz min-one-of patches with [ disaster = true and pzcor = [zcor] of myself ] [ distance myself ]
+    let minpz+1 min-one-of patches with [ disaster = true and pzcor = [zcor] of myself - 1 ] [ distance myself ]
+    let minpx min-one-of patches with
+    [ disaster = true and
+      pxcor <= ([xcor] of myself) + 0.5 and ([xcor] of myself) - 0.5 <= pxcor and
+      pycor <= ([ycor] of myself) + 0.5 and ([ycor] of myself) - 0.5 <= pycor
+    ]
+    [ distance myself ]
+
+    let disz 10
+    let disz+1 10
+    let disx 10
+
+    if minpz+1 != nobody[ set disz+1 distance-nowrap minpz+1 face minpz+1 ]
+    if minpz != nobody [ set disz distance-nowrap minpz face minpz]
+    if minpx != nobody [ set disx distance-nowrap minpx facexyz xcor ycor (zcor - 1) set heading 90 ]
+
+    if 1.8 <= disz and disz <= 2.1 and [ typeid ] of patch-here = "waypoint" [ set color white ]
+    if 1.8 <= disz+1 and disz+1 <= 2.2 and disz >= 3 and [ typeid ] of patch-here = "waypoint" [ set color white ]
+    if 2 < disx and disx <= 2.2 and xcor mod 1 != 0 and [ typeid ] of patch-here = "waypoint" [ set color white ]
+
+    if [typeid] of patch-ahead 1 = "building" [ die ]
+    if any? neighbors with [ typeid = "building" ]
+    [ if distance-nowrap min-one-of neighbors with [ typeid = "building" ] [ distance-nowrap myself ] < 0.8 [die] ]
+    if color != white [ die ]
+    set color gray
+
+    let id 0
+    if minpz != nobody [ set id [blockid] of minpz]
+    if minpz+1 != nobody [ set id [blockid] of minpz+1 ]
+    if minpx != nobody [ set id [blockid] of minpx ]
+    let meanx mean [ pxcor ] of patches with [ blockid = id ]
+    let meany mean [ pycor ] of patches with [ blockid = id ]
+    let meanz mean [ pzcor ] of patches with [ blockid = id ]
+    facexyz meanx meany meanz
+
+  ]
+
+  ask patches with [ typeid = "waypoint" ]
+  [ set typeid "air" ]
+
+  reset-centroids
+  K-means-clustering
+  setup-GA
+
+
+end
+
+;=====================================================================================================
+;======================================= K-MEANS CLUSTERING ==========================================
+;=====================================================================================================
+
+to reset-centroids
+  set any-centroids-moved? true
+  ask centroids [die]
+
+  create-ordered-centroids num-uavs
+  [ setxyz random-xcor random-ycor random-zcor
+    set size 0.5
+  ]
+
+  let colors base-colors
+  let i 0
+  while [ i < count centroids ]
+  [ ask item i sort centroids
+    [ set color last colors + 1
+      set colors butlast colors
+      set i i + 1
+    ]
+  ]
+
+  ask data-points
+  [ set membership n-values count centroids [ random 1 ]
+    set distributed false
+  ]
+
+  clear-all-plots
+  reset-ticks
+end
+
+;=====================================================================================================
+
+to K-means-clustering
+  while [ any-centroids-moved? = true ]
+  [ set any-centroids-moved? false
+    assign-clusters
+    if waypoint-clustering = "Fuzzy C-means" [ update-membership ]
+    update-clusters
+
+    if not any-centroids-moved?
+    [ output-type "UAV1 have " output-type count data-points with [ shade-of? color pink ] output-print " waypoints"
+      output-type "UAV2 have " output-type count data-points with [ shade-of? color magenta ] output-print " waypoints"
+      output-type "UAV3 have " output-type count data-points with [ shade-of? color violet ] output-print " waypoints"
+      output-type "UAV4 have " output-type count data-points with [ shade-of? color blue ] output-print " waypoints"
+      output-type "UAV5 have " output-type count data-points with [ shade-of? color sky ] output-print " waypoints"
+      output-print "======================="
+
+      ask data-points with [ max membership < threshold ] [ set color gray ]
+      ask centroids
+      [ if not any? data-points with [ shade-of? color [ color ] of myself ]
+        [ setxyz random-xcor random-ycor random-zcor
+          set any-centroids-moved? true ]
+      ]
+    ]
+  ]
+end
+
+;=====================================================================================================
+
+to assign-clusters
+  ask data-points [set color [color] of closest-centroid - 2]
+end
+
+to-report closest-centroid
+  ifelse waypoint-clustering = "Fuzzy C-means"
+  [ let max-position position max membership membership
+    report item max-position sort centroids
+  ]
+  [ report min-one-of centroids [ distance-nowrap myself ] ]
+end
+
+;=====================================================================================================
+
+to update-membership
+
+  ask data-points
+  [ let a map distance-nowrap sort centroids
+    let p n-values count centroids [ i -> i ]
+    set membership (map [ ?1 -> membership-function a ?1 ] p )
+  ]
+
+end
+
+to-report membership-function [ distance-centroids position-membership ] ;new!!!
+
+  let a n-values count centroids [ (item position-membership distance-centroids) ^ 2 ]
+  let b (map [ i -> i ^ 2 ] distance-centroids)
+  let c (map [ [x y] -> (x / y) ^ ( 1 / ( fuzzyness - 1 ) ) ] a b)
+  report 1 / (sum c)
+
+end
+
+;=====================================================================================================
+
+to update-clusters
+
+  let movement-threshold 0.05
+
+  ask centroids
+  [ let my-points data-points with [ shade-of? color [ color ] of myself ]
+
+    let ID position self sort centroids
+    let data-points-list sort data-points
+
+    let new-xcor 0
+    let new-ycor 0
+    let new-zcor 0
+
+    if any? my-points
+    [ ifelse waypoint-clustering = "Fuzzy C-means"
+      [ let xcor-list map [ i -> ([xcor] of i) * (item ID [membership] of i) ^ fuzzyness ] data-points-list
+        set new-xcor sum xcor-list / (sum map [ i -> (item ID [membership] of i) ^ fuzzyness ] data-points-list)
+
+        let ycor-list map [ i -> ([ycor] of i) * (item ID [membership] of i) ^ fuzzyness ] data-points-list
+        set new-ycor (sum ycor-list) / (sum map [ i -> (item ID [membership] of i) ^ fuzzyness ] data-points-list)
+
+        let zcor-list map [ i -> ([zcor] of i) * (item ID [membership] of i) ^ fuzzyness ] data-points-list
+        set new-zcor (sum zcor-list) / (sum map [ i -> (item ID [membership] of i) ^ fuzzyness ] data-points-list)
+      ]
+      [ set new-xcor mean [ xcor ] of my-points
+        set new-ycor mean [ ycor ] of my-points
+        set new-zcor mean [ zcor ] of my-points
+      ]
+
+      if distancexyz-nowrap new-xcor new-ycor new-zcor > movement-threshold [ set any-centroids-moved? true ]
+      setxyz new-xcor new-ycor new-zcor
+    ]
+  ]
+
+  update-plots
+end
+
+;=====================================================================================================
+;=================================== SETUP GENETIC ALGORITHM =========================================
+;=====================================================================================================
+
+to setup-GA
+
+  create-uavs num-uavs [
+    set shape "wheel"
+    set size 0.5
+    setxyz launch-xcor launch-ycor (min-pzcor + 1)
+    set my-wp-number 1
+  ]
+
+  let colors base-colors
+  let i 0
+  while [ i < count uavs ]
+  [ ask item i sort uavs
+    [ set color last colors + 1
+      set colors butlast colors
+      set i i + 1
+    ]
+  ]
+
+  foreach [who] of uavs [ ?1 -> genetic-algorithm ?1 ]
+  set glb-min-fitness 999999
+  if [wpfitness] of winner < glb-min-fitness
+    [ set glb-min-fitness [wpfitness] of winner
+      set glb-min-path [wppath] of winner ]
+  ask uavs [ set my-path [wppath] of my-winner ]
+  foreach [who] of uavs [ ?1 -> draw-shortest-path ?1 ]
+  output-print "Setup completed."
+  output-print "======================="
+  reset-ticks
+  reset-timer
+end
+
+;=====================================================================================================
+to genetic-algorithm [ uav-id ]
+  let my-data-points data-points with [ color = [ color ] of uav uav-id - 2 ]
+
+;*******  genetic algorithm genomes  *******
+
+  if genetic-algorithm? = true
+  [ create-genomes genomes-num
+    [ let data-points-count count my-data-points
+      set wppath n-of data-points-count [who] of my-data-points
+      set uav-parent uav-id
+    ]
+  ]
+
+;*******  greedy algorithm genome  *********
+
+  if nearest-neighbor? = true
+  [ create-genomes 1
+    [ set wppath (list [ who ] of min-one-of my-data-points [ distance-nowrap uav uav-id ])
+      let wpp wppath
+      while [ length wpp < count my-data-points ]
+      [ set wpp lput [ who ] of min-one-of my-data-points with [ not member? who wpp ] [ distance-nowrap data-point last wpp ] wpp ]
+      set wppath wpp
+      set uav-parent uav-id
+    ]
+  ]
+
+;********************************************
+
+  ask genomes with [ uav-parent = uav-id ]
+  [ set wppath fput uav-id wppath
+    set wppath lput uav-id wppath
+    move-to uav uav-id
+    set size 0.1
+  ]
+
+  ask uav uav-id [ set my-winner one-of genomes with [ uav-parent = uav-id ] ]
+  ask genomes with [ uav-parent = uav-id ]
+  [ calculate-wpdistance uav-id
+    calculate-wpfitness uav-id ]
+
+end
+
+;=====================================================================================================
+;===================================== MAIN PROGRAM ==================================================
+;=====================================================================================================
+
+to go
+  if waypoint-clustering = "Fuzzy C-means" and genetic-algorithm? = false [ distribute-waypoint ]
+  ifelse genetic-algorithm? = true
+  [ foreach [who] of uavs [ ?1 -> create-new-generation ?1 ] ]
+  [ foreach [who] of uavs [ ?1 -> improvement ?1 ]
+  ]
+
+  if [wpfitness] of winner < glb-min-fitness
+    [ set glb-min-fitness [wpfitness] of winner
+      set glb-min-path [wppath] of winner
+    ]
+
+  do-plot
+  ask uavs [ set my-path [wppath] of my-winner ]
+  clear-drawing
+  foreach [who] of uavs [ ?1 -> draw-shortest-path ?1 ]
+  set time timer
+  tick
+end
+
+;=====================================================================================================
+
+to create-new-generation [ uav-id ]
+  let old-generation genomes with [uav-parent = uav-id] ;all genomes of this uav are in old-generation UAVのゲノム = old-generation
+  ask old-generation with [ uav-parent = uav-id ]
+  [ ifelse random-float 100.0 < 90.0 ;90.0 is the crossover-ratio REVISE THIS!!! 9割の確率で
+    [ let parent1 min-one-of (n-of (tournament-rate * genomes-num / 100) old-generation) [wpfitness] ;? out of 500 genomes are evaluated (tournament-size)
+      let parent2 min-one-of (n-of (tournament-rate * genomes-num / 100) old-generation) [wpfitness] ;old-generationからtournament-size（デフォルト150）個のゲノムを取り出し，そこからwpfitnessが最小値のものをparentとする
+
+      let wp-1 but-last [wppath] of parent1 ;taking out uav id of parents path
+      set wp-1 but-first wp-1
+      let wp-2 but-last [wppath] of parent2 ;taking out uav id of parents path
+      set wp-2 but-first wp-2 ;wp-1,wp-2から先頭と末尾の要素を除去
+
+;*******  one point crossover  *******
+
+      if crossover? = "one point"
+      [ let x 0
+        let y random (length wp-1)
+
+        let child1f sublist wp-1 0 y
+        let child2f sublist wp-2 0 y
+
+        let child1l sublist wp-1 y length wp-2
+        let child2l sublist wp-2 y length wp-1
+        let child-mode ( se child1l child2l )
+        let child-dup modes child-mode
+
+        foreach child-dup [ ?1 -> set child-mode remove ?1 child-mode ]
+        let childm-length length child-mode
+        let child1m sublist child-mode 0 (childm-length / 2)
+        ;let child2m sublist child-mode (childm-length / 2) childm-length
+        foreach child1m [ ?1 -> set child1f remove ?1 child1f ]
+        ;foreach child2m [ ?1 -> set child2f remove ?1 child2f ]
+        let child1 ( se child1f child1l )
+        ;let child2 ( se child2f child2l )
+        hatch 1 [ set wppath (se uav-id child1 uav-id) ]
+        ;set wppath child1 ;not doing anything with child2
+      ]
+
+;*******  two point crossover  *******
+
+      if crossover? = "two point"
+      [ let x random length wp-1
+        let y random length wp-1
+        while [ x > y ]
+        [ set y random length wp-1 ]
+
+        let child1f sublist wp-1 0 x
+        let child2f sublist wp-2 0 x
+
+
+        let child1m sublist wp-2 x y
+        let child2m sublist wp-1 x y
+
+        let child1l sublist wp-1 y length wp-1
+        let child2l sublist wp-2 y length wp-2
+        let child-mode ( se child1m child2m )
+        let child-dup modes child-mode
+
+        if not (child-mode = child-dup)
+        [ foreach child-dup [ ?1 -> set child-mode remove ?1 child-mode ] ]
+        let child-mode-length length child-mode
+        let child1mode sublist child-mode 0 (child-mode-length / 2)
+        let child2mode sublist child-mode (child-mode-length / 2) child-mode-length
+
+        (foreach child1mode child2mode
+          [ [?1 ?2] ->
+            let m-item position ?1 child1f
+            if member? ?1 child1f
+            [ set child1f remove ?1 child1f
+              set child1f insert-item m-item child1f ?2 ]
+            set m-item position ?1 child1l
+            if member? ?1 child1l
+            [ set child1l remove ?1 child1l
+              set child1l insert-item m-item child1l ?2 ]
+          ]
+        )
+        let child1 ( se child1f child1m child1l )
+        hatch 1 [ set wppath (se uav-id child1 uav-id) ]
+        ;set wppath child1 ;not doing anything with child2
+      ]
+
+        ;set wppath fput uav-id wppath
+        ;set wppath lput uav-id wppath
+    ]
+    [ set old-generation other old-generation ]
+  ]
+  ask old-generation [die]
+  mutate uav-id ;突然変異
+  ask genomes with [ uav-parent = uav-id ] [ calculate-wpdistance uav-id ]
+  calculate-wpfitness uav-id ;wpfitnessの算出
+end
+
+;=====================================================================================================
+;========================================== MUTATION =================================================
+;=====================================================================================================
+
+to mutate [ uav-id ]
+  repeat repeat-mutation
+  [ ask genomes with [uav-parent = uav-id ]
+    [ set wppath but-last wppath
+      set wppath but-first wppath
+
+;*******  2-opt mutation  *******
+
+      if random-float 100.0 < mutation-rate ;突然変異が起こらないとき，突然変異率の確率で
+      [ let random-item1 random length wppath ;finding a random position wppathからランダムにnpositionを選択
+        let random-item2 random length wppath
+        let new-wppath [ ]
+        let x 0
+
+        while [ random-item1 = random-item2 ] ;to be sure that no same item is selected  同じpositionが選ばれた場合は別のpositionを選択させる
+        [ set random-item2 random length wppath ]
+
+        ifelse random-item1 < random-item2
+        [ let sl sublist wppath random-item1 ( random-item2 + 1 ) ;選んだposition間の要素をslというリストに指定
+          set sl reverse sl ;slをひっくり返す，逆にする
+          while [ x < random-item1 ] ;wppathのrandom-item1までをnew-pathに挿入
+          [ set new-wppath lput item x wppath new-wppath
+            set x x + 1 ]
+          foreach sl ;slをnew-pathに挿入（slはひっくり返っている）
+          [ ?1 -> set new-wppath lput ?1 new-wppath
+                  set x x + 1 ]
+          while [ x < length wppath ] ;wppathのrandom-item2以降をnew-pathに挿入
+          [ set new-wppath lput item x wppath new-wppath
+            set x x + 1 ]
+          set wppath new-wppath
+        ]
+        [ let sl sublist wppath random-item2 ( random-item1 + 1 )
+          set sl reverse sl
+          while [ x < random-item2 ]
+          [ set new-wppath lput item x wppath new-wppath
+            set x x + 1 ]
+          foreach sl
+          [ ?1 -> set new-wppath lput ?1 new-wppath
+                  set x x + 1 ]
+          while [ x < length wppath ]
+          [ set new-wppath lput item x wppath new-wppath
+            set x x + 1 ]
+          set wppath new-wppath
+        ]
+      ]
+
+;*******  swamp mutation  *******
+
+      if random-float 100.0 < mutation-rate ;突然変異率の確率で
+      [ let random-item1 random length wppath ;finding a random position  wppathからランダムにpositionを一つ選択
+        let random-item2 random length wppath
+
+        while [ random-item1 = random-item2 ] ;to be sure that no same item is selected  同じpositionが選ばれた場合は別のpositionを選択させる
+        [ set random-item2 random length wppath ]
+
+        let selected-wp1 item random-item1 wppath ;taking the items  wppathの中からwpを選択
+        let selected-wp2 item random-item2 wppath
+
+        set wppath replace-item random-item1 wppath selected-wp2 ; replacing item2 in position1  選択した2つのwpを入れ替える
+        set wppath replace-item random-item2 wppath selected-wp1 ; replacing item1 in position2
+      ]
+
+;*******  insert mutation  *******
+
+      if random-float 100.0 < mutation-rate
+      [ let random-wp one-of wppath
+        set wppath remove random-wp wppath
+        set wppath insert-item random length wppath wppath random-wp
+      ]
+
+      set wppath fput uav-id wppath ;wppathの先頭と末尾にスタート地点を追加
+      set wppath lput uav-id wppath
+    ]
+  ]
+end
+
+  ;(*) http://support.sas.com/documentation/cdl/en/imlug/59656/HTML/default/viewer.htm#geneticalgs_sect6.htm
+
+;=====================================================================================================
+;========================================== IMPROVEMENT ==============================================
+;=====================================================================================================
+
+to improvement [ uav-id ]
+
+  ask genomes with [ uav-parent = uav-id ]
+  [ let reverse? 0
+    ifelse 50 < random 100 [ set wppath reverse wppath set reverse? true ] [ set reverse? false ]
+    let wpp wppath
+
+    let i 0
+    let j 1
+    let path-distance1 0
+    let path-distance2 0
+
+    while [ i < (length wppath) - 3 ]
+    [ while [ j < (length wppath) - 1 ]
+      [
+
+;*******  2-opt improvement  *******
+
+        ask turtle item i wpp [ set path-distance1 distance-nowrap turtle item (i + 1) wpp ]
+        ask turtle item j wpp [ set path-distance1 path-distance1 + distance-nowrap turtle item (j + 1) wpp ]
+        ask turtle item i wpp [ set path-distance2 distance-nowrap turtle item j wpp ]
+        ask turtle item (i + 1) wpp [ set path-distance2 path-distance2 + distance-nowrap turtle item (j + 1) wpp ]
+
+        if path-distance1 > path-distance2
+        [ let sl1 sublist wpp 0 (i + 1)
+          let sl2 sublist wpp (i + 1) (j + 1)
+          let sl3 sublist wpp (j + 1) length wpp
+          set sl2 reverse sl2
+          set wpp (se sl1 sl2 sl3)
+        ]
+
+;*******  insert improvement  *******
+
+        ask turtle item i wpp [ set path-distance1 distance-nowrap turtle item (i + 1) wpp ]
+        ask turtle item (i + 1) wpp [ set path-distance1 path-distance1 + distance-nowrap turtle item (i + 2) wpp ]
+        ask turtle item j wpp [ set path-distance1 path-distance1 + distance-nowrap turtle item (j + 1) wpp ]
+        ask turtle item i wpp [ set path-distance2 distance-nowrap turtle item (i + 2) wpp ]
+        ask turtle item j wpp [ set path-distance2 path-distance2 + distance-nowrap turtle item (i + 1) wpp ]
+        ask turtle item (i + 1) wpp [ set path-distance2 path-distance2 + distance-nowrap turtle item (j + 1) wpp ]
+
+
+
+        if path-distance1 >= path-distance2
+        [ let selected-wp item (i + 1) wpp
+          set wpp remove selected-wp wpp
+          set wpp insert-item j wpp selected-wp
+        ]
+
+;************************************
+
+        set j (j + 1)
+      ]
+
+      set i (i + 1)
+      set j (i + 1)
+    ]
+
+
+    set wppath wpp
+    if reverse? = true [ set wppath reverse wppath ]
+
+
+    calculate-wpdistance uav-id
+  ]
+  calculate-wpfitness uav-id
+
+end
+
+to distribute-waypoint
+
+  let max-genome max-one-of genomes [wpfitness]
+  let min-genome min-one-of genomes [wpfitness]
+
+  if threshold > 0
+  [ let candi max-one-of data-points with [ color = gray ] [ item position uav [uav-parent] of min-genome sort uavs membership ]
+    if candi = nobody [stop]
+    ask min-genome
+    [ let neighbor [who] of min-one-of data-points with [ color = ([color] of uav [uav-parent] of myself) - 2 ] [ distance-nowrap candi ]
+      set wppath insert-item (1 + (position neighbor wppath)) wppath [who] of candi
+    ]
+    ask candi [ set color ([color] of uav [uav-parent] of min-genome) - 2  ]
+  ]
+
+  if ([wpfitness] of max-genome) - ([wpfitness] of min-genome) > 1 and not any? data-points with [ color = gray ]
+  [ let maxwps data-points with [ color = ([color] of uav [uav-parent] of max-genome) - 2 ]
+    let minwps data-points with [ color = ([color] of uav [uav-parent] of min-genome) - 2 ]
+    let ID position uav [uav-parent] of max-genome sort uavs
+    let next-ID position uav [uav-parent] of min-genome sort uavs
+    let my-centroid one-of centroids with [ color = ([color] of one-of maxwps) + 2 ]
+    let other-centroid one-of centroids with [ color = [color] of uav [uav-parent] of max-genome ]
+
+    let min-maxwp max-one-of maxwps
+      ;[ max replace-item ID membership 0 = item next-ID membership  ]
+      [ item next-ID membership ]
+
+    if min-maxwp = nobody
+    [ ask min-genome [ set min-genome min-one-of other genomes [wpfitness] ]
+      set minwps data-points with [ color = ([color] of uav [uav-parent] of min-genome) - 2 ]
+      set next-ID position uav [uav-parent] of min-genome sort uavs
+      set min-maxwp max-one-of maxwps with
+        [ max replace-item ID membership 0 = item next-ID membership  ]
+        [ item next-ID membership ]
+    ]
+    if min-maxwp = nobody
+    [ ask max-genome [ set max-genome max-one-of other genomes [wpfitness] ]
+      set min-genome min-one-of genomes [wpfitness]
+      set minwps data-points with [ color = ([color] of uav [uav-parent] of min-genome) - 2 ]
+      set next-ID position uav [uav-parent] of min-genome sort uavs
+      set min-maxwp max-one-of maxwps with
+        [ max replace-item ID membership 0 = item next-ID membership  ]
+        [ item next-ID membership ]
+    ]
+    if min-maxwp = nobody
+    [ ask min-genome [ set min-genome min-one-of other genomes [wpfitness] ]
+      set minwps data-points with [ color = ([color] of uav [uav-parent] of min-genome) - 2 ]
+      set next-ID position uav [uav-parent] of min-genome sort uavs
+      set min-maxwp max-one-of maxwps with
+        [ max replace-item ID membership 0 = item next-ID membership  ]
+        [ item next-ID membership ]
+    ]
+    if min-maxwp = nobody [stop]
+    ;watch min-maxwp
+    show [uav-parent] of max-genome
+    show [uav-parent] of min-genome
+
+    let path-distance [ distance-nowrap min-one-of minwps [distance-nowrap min-maxwp] ] of min-maxwp
+    ;show path-distance - ([wpfitness] of max-genome) - ([wpfitness] of min-genome)
+
+
+    if 2 * path-distance < ([wpfitness] of max-genome) - ([wpfitness] of min-genome)
+    [ ask genomes with [ uav-parent = [who] of item ID sort uavs ]
+      [ set wppath remove [who] of min-maxwp wppath ]
+
+      ask min-genome
+      [ let neighbor [who] of min-one-of data-points with [ color = ([color] of uav [uav-parent] of myself) - 2 ] [ distance-nowrap min-maxwp ]
+        set wppath insert-item (1 + (position neighbor wppath)) wppath [who] of min-maxwp
+      ]
+
+      ask min-maxwp [ set color ([color] of uav [uav-parent] of min-genome) - 2  ]
+    ]
+    ask min-maxwp [ set distributed true ]
+  ]
+
+
+end
+
+;=====================================================================================================
+;======================================= EVALUATE THE MISSION ========================================
+;=====================================================================================================
+
+;revised on 20160210
+to calculate-wpdistance [ uav-id ]
+  let dpdistance 0
+  let dptime 0
+  let wpts 0
+  let Total-wpts (length wppath - 1) ;to discount the last item which is a UAV and not a waypoint （total-wptsを　wppathの長さ-1 とする）
+  let wpa wppath
+  while [ wpts < Total-wpts ] ;wptsがtotal-wptsより小さい間，
+  [
+    ask turtle item wpts wppath
+    [ let dis distance-nowrap turtle item (wpts + 1) wpa
+      set dpdistance dpdistance + dis
+
+      ifelse 5 * dis > (max-verocity ^ 2) / acceleration
+      [ set dptime dptime + (5 * dis / max-verocity) + (max-verocity / acceleration) + idling-time ]
+      [ set dptime dptime + 2 * sqrt (5 * dis / acceleration) + idling-time ]
+    ]
+    set wpts wpts + 1
+  ]
+
+  set wpdistance dpdistance
+  set wptime dptime
+  ifelse fitness? = "distance"
+  [set wpfitness wpdistance] ;wpfitness = wpdistance
+  [set wpfitness wptime]
+
+end
+
+;=====================================================================================================
+;revised on 201602010
+to calculate-wpfitness [ uav-id ]
+  ask uav uav-id [
+  set my-winner min-one-of genomes with [uav-parent = uav-id ] [wpfitness] ;uav-parent = uav-id のゲノムのうち，wpfitnessが最小のものをmy-winnerに指定 （UAVそれぞれのローカルな最小値）
+  set my-loser max-one-of genomes with [uav-parent = uav-id ] [wpfitness] ] ;wpfitnessが最大のものをmy-loserに指定
+  set winner min-one-of genomes [wpfitness] ;ゲノムの中でwpfitnessが最小のものをwinnerに指定　（全体におけるグローバルな最小値）
+  set loser max-one-of genomes [wpfitness] ;wpfitnessが最大のものをloserに指定
+
+end
+
+;=====================================================================================================
+
+to do-plot
+  let fitness-dump [wpfitness] of genomes
+  let av mean fitness-dump
+  let best min fitness-dump
+  let worst max fitness-dump
+  set-current-plot "fitness-plot"
+  set-current-plot-pen "av"
+  plot av
+  set-current-plot-pen "best"
+  plot best
+  set-current-plot-pen "worst"
+  plot worst
+
+  set-current-plot "flight-distance-plot"
+       ask uavs with [ color = 136 ] [
+       set best1 [ 5 * wpdistance ] of my-winner
+       set-current-plot-pen "UAV-1"
+       plot best1
+     ]
+       ask uavs with [ color = 126 ] [
+       set-current-plot-pen "UAV-2"
+       set best2 [ 5 * wpdistance ] of my-winner
+       plot best2
+     ]
+       ask uavs with [ color = 116 ] [
+       set-current-plot-pen "UAV-3"
+       set best3 [ 5 * wpdistance ] of my-winner
+       plot best3
+     ]
+       ask uavs with [ color = 106 ] [
+       set best4 [ 5 * wpdistance ] of my-winner
+       set-current-plot-pen "UAV-4"
+       plot best4
+     ]
+       ask uavs with [ color = 96 ] [
+       set-current-plot-pen "UAV-5"
+       set best5 [ 5 * wpdistance ] of my-winner
+       plot best5
+     ]
+
+  set-current-plot "flight-time-plot"
+       ask uavs with [ color = 136 ] [
+       set time1 [ wptime ] of my-winner
+       set-current-plot-pen "UAV-1"
+       plot time1
+     ]
+       ask uavs with [ color = 126 ] [
+       set-current-plot-pen "UAV-2"
+       set time2 [ wptime ] of my-winner
+       plot time2
+     ]
+       ask uavs with [ color = 116 ] [
+       set-current-plot-pen "UAV-3"
+       set time3 [ wptime ] of my-winner
+       plot time3
+     ]
+       ask uavs with [ color = 106 ] [
+       set time4 [ wptime ] of my-winner
+       set-current-plot-pen "UAV-4"
+       plot time4
+     ]
+       ask uavs with [ color = 96 ] [
+       set-current-plot-pen "UAV-5"
+       set time5 [ wptime ] of my-winner
+       plot time5
+     ]
+
+end
+
+;=====================================================================================================
+
+to draw-shortest-path [ uav-id ]
+  ask links with [ color = [color] of uav uav-id ] [ die ]
+  ask data-points with [ color = [ color ] of uav uav-id ] [ die ]
+
+  create-data-points 1 [
+    move-to uav uav-id
+    set membership replace-item position (uav uav-id) sort uavs n-values count centroids [ 0 ] 1
+    set color [ color ] of uav uav-id
+    set visited 0
+    set size 0.2
+  ]
+
+  ask uav uav-id
+  [ let start [ who ] of data-points with [ color = [ color ] of uav uav-id ]
+    set my-path but-first my-path
+    set my-path but-last my-path
+    set my-path fput item 0 start my-path
+    set my-path lput item 0 start my-path
+
+    let path [ wppath ] of my-winner
+    ;show path
+    ask data-point item 0 start
+    [ create-link-to data-point item 1 path [ set color [color] of uav uav-id ] ]
+    let x 1
+    while [ x < (length path - 2) ]
+    [ ask data-point (item x path) [ create-link-to data-point item (x + 1) path [ set color [color] of uav uav-id ] ]
+      set x x + 1
+    ]
+    ask data-point (item x path) [ create-link-to data-point item 0 start [ set color [color] of uav uav-id ] ]
+  ]
+
+  ask links [ set thickness 0.1 ]
+end
+
+;=====================================================================================================
+;======================================= EXECUTE MISSION =============================================
+;=====================================================================================================
+
+to execute
+  reset-ticks
+
+  ask uavs
+  [ ifelse my-wp-number + 1 <= length my-path
+    [ let next-wp turtle item my-wp-number my-path
+      face-nowrap next-wp
+      fd 0.05
+      set total-distance total-distance + 0.05
+
+      if member? "building" [typeid] of patches in-radius 0.999
+      [ ask turtle item (my-wp-number - 1) my-path [ ask patch-here [ set state "start" ] ]
+        ask next-wp [ ask patch-here [ set state "goal" ] ]
+        A*-algorithm who one-of patches with [ state = "start" ] one-of patches with [ state = "goal" ]
+      ]
+      ;[ hatch-data-points 1 [ set color white ] ]
+
+      if distance-nowrap next-wp < 0.05 and [visited] of next-wp = 0
+      [ set my-wp-number my-wp-number + 1
+        ask next-wp [ set visited 1 ]
+      ]
+    ]
+    [ if execute-value = 0 [
+      output-type "UAV"
+      output-type [ who ] of self
+      output-type " flew "
+      output-type precision (total-distance * 5) 1
+      output-print "m"
+      set execute-value execute-value + 1
+      ]
+    ]
+   ]
+
+  if all? uavs [ execute-value = 1 ]
+  [ ask uavs
+    [ set execute-value 0
+      set my-wp-number 1
+      set total-distance 0
+    ]
+    output-print "======================="
+    ask data-points [ set visited 0 ]
+    ask genomes
+    [ set wppath [my-path] of uav uav-parent ]
+    stop
+  ]
+
+  tick
+end
+
+to A*-algorithm [uav-id start goal]
+
+;*******  A*-algorithm  *******
+
+  ask patches with [ typeid = "air" ] [ set cost 100 set state "none" ]
+  let n start
+  ask n
+  [ set cost distance-nowrap goal
+    set state "open"
+    set g-distance cost
+  ]
+
+  while [ n != goal ]
+  [ set n min-one-of patches with [ state = "open" ] [ cost ]
+
+    ask n
+    [ set state "close"
+      ask neighbors6 with [ typeid = "air" ]
+      [ set g-distance distance-nowrap goal
+        let temp-cost ([cost] of n) - ([g-distance] of n) + 1 + ([g-distance] of self)
+
+        if state = "none" [ set cost temp-cost set state "open" ]
+        if state = "open" and temp-cost < cost [ set cost temp-cost set state "none" ]
+        if state = "close" and temp-cost < cost [ set cost temp-cost set state "none" ]
+        ;set plabel precision cost 2
+      ]
+    ]
+  ]
+
+;*******  generate waypoint  *******
+
+  let next-wp turtle item my-wp-number my-path
+  let start-wp turtle item (my-wp-number - 1) my-path
+  move-to next-wp
+  let prev-patch patch-here
+  let temp-patch patch-here
+
+  while [ patch-here != start ]
+  [ set next-wp turtle item my-wp-number my-path
+    set prev-patch temp-patch
+    set temp-patch min-one-of neighbors6 with [ typeid = "air" ] [ cost ]
+    move-to temp-patch
+
+    while [ distance-nowrap next-wp > 0.05 ]
+    [ face-nowrap next-wp
+      fd 0.05
+
+      if member? "building" [typeid] of patches in-radius 0.99
+      [ move-to prev-patch
+        let new-wp 0
+        hatch-data-points 1
+        [ set size 0.2
+          set color [color] of uav uav-id
+          set new-wp who
+        ]
+        ask next-wp [ ask in-link-from start-wp [die] create-link-from data-point new-wp [ set color ([color] of uav uav-id) + 2 set thickness 0.1 ] ]
+        ask data-point new-wp [ create-link-from start-wp [ set color ([color] of uav uav-id) + 2 set thickness 0.1 ] ]
+        set my-path insert-item my-wp-number my-path new-wp
+        set next-wp data-point new-wp
+      ]
+    ]
+    move-to temp-patch
+  ]
+
+  move-to start
+
+  ask patches with [ typeid = "air" ]
+  [ set cost 100
+    set state "none"
+  ]
+
+end
+
+to output
+
+  let path [wppath] of winner
+  let i 1
+  set-current-plot "data-points-plot"
+
+  while [ i < length path - 1 ]
+  [ ask data-point item i path
+    [ let x xcor        set-current-plot-pen "x"       plot x
+      let y ycor        set-current-plot-pen "y"       plot y
+      let z zcor + 6.5  set-current-plot-pen "z"       plot z
+      let p pitch       set-current-plot-pen "pitch"   plot p
+      let h heading     set-current-plot-pen "heading" plot h
+      let r roll        set-current-plot-pen "roll"    plot r
+    ]
+    set i i + 1
+  ]
+
+  ;ask data-points [ type xcor write ycor write zcor write round pitch write round heading print "" ]
+  export-plot "data-points-plot" "plot.csv"
+
+end
+
+to export-report
+end
+@#$#@#$#@
+GRAPHICS-WINDOW
+0
+0
+668
+669
+-1
+-1
+20.0
+1
+10
+1
+1
+1
+0
+1
+1
+1
+-16
+16
+-16
+16
+-7
+7
+1
+0
+1
+ticks
+30.0
+
+BUTTON
+0
+10
+201
+43
+NIL
+setup-city
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+0
+76
+201
+109
+NIL
+go
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+0
+
+BUTTON
+1
+374
+67
+407
+Clear Path
+cd
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SLIDER
+559
+29
+731
+62
+disaster-area
+disaster-area
+1
+20
+20.0
+1
+1
+buildings
+HORIZONTAL
+
+CHOOSER
+559
+491
+731
+536
+Crossover?
+Crossover?
+"one point" "two point"
+1
+
+SWITCH
+559
+668
+731
+701
+repetition-limit?
+repetition-limit?
+0
+1
+-1000
+
+BUTTON
+0
+43
+201
+76
+NIL
+setup-waypoints
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SLIDER
+559
+701
+731
+734
+#-of-repetitions
+#-of-repetitions
+0
+1000
+1000.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+559
+536
+731
+569
+tournament-rate
+tournament-rate
+0
+100
+1.0
+1
+1
+%
+HORIZONTAL
+
+SLIDER
+559
+602
+731
+635
+mutation-rate
+mutation-rate
+0
+30
+10.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+206
+55
+551
+241
+fitness-plot
+time
+fitness
+0.0
+10.0
+0.0
+1.0
+true
+true
+"" ""
+PENS
+"av" 1.0 0 -13791810 true "" ""
+"best" 1.0 0 -8732573 true "" ""
+"worst" 1.0 0 -4699768 true "" ""
+
+PLOT
+206
+286
+551
+480
+flight-distance-plot
+time
+distance
+0.0
+10.0
+0.0
+10.0
+true
+true
+"" ""
+PENS
+"UAV-1" 1.0 0 -1664597 true "" ""
+"UAV-2" 1.0 0 -4699768 true "" ""
+"UAV-3" 1.0 0 -6917194 true "" ""
+"UAV-4" 1.0 0 -10649926 true "" ""
+"UAV-5" 1.0 0 -11033397 true "" ""
+
+OUTPUT
+0
+142
+201
+363
+13
+
+MONITOR
+206
+764
+551
+809
+Best Glb Solution
+glb-min-path
+17
+1
+11
+
+MONITOR
+206
+480
+275
+525
+distance 1
+best1
+2
+1
+11
+
+MONITOR
+275
+480
+344
+525
+distance 2
+best2
+2
+1
+11
+
+MONITOR
+344
+480
+413
+525
+distance 3
+best3
+2
+1
+11
+
+MONITOR
+413
+480
+482
+525
+distance 4
+best4
+2
+1
+11
+
+MONITOR
+482
+480
+551
+525
+distance 5
+best5
+2
+1
+11
+
+BUTTON
+0
+109
+201
+142
+NIL
+Execute
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SLIDER
+559
+62
+731
+95
+num-uavs
+num-uavs
+1
+5
+3.0
+1
+1
+uavs
+HORIZONTAL
+
+SWITCH
+559
+458
+731
+491
+nearest-neighbor?
+nearest-neighbor?
+0
+1
+-1000
+
+INPUTBOX
+559
+154
+731
+214
+seed
+1.0
+1
+0
+Number
+
+SWITCH
+559
+425
+731
+458
+genetic-algorithm?
+genetic-algorithm?
+1
+1
+-1000
+
+SLIDER
+559
+635
+731
+668
+repeat-mutation
+repeat-mutation
+1
+5
+3.0
+1
+1
+repeat
+HORIZONTAL
+
+SLIDER
+559
+569
+731
+602
+genomes-num
+genomes-num
+0
+500
+300.0
+1
+1
+NIL
+HORIZONTAL
+
+INPUTBOX
+559
+94
+643
+154
+launch-xcor
+0.0
+1
+0
+Number
+
+INPUTBOX
+643
+94
+731
+154
+launch-ycor
+4.0
+1
+0
+Number
+
+INPUTBOX
+559
+289
+645
+349
+fuzzyness
+2.0
+1
+0
+Number
+
+CHOOSER
+559
+244
+731
+289
+waypoint-clustering
+waypoint-clustering
+"K-means" "Fuzzy C-means"
+1
+
+INPUTBOX
+645
+289
+731
+349
+threshold
+0.0
+1
+0
+Number
+
+BUTTON
+0
+410
+73
+443
+NIL
+output
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+MONITOR
+206
+10
+275
+55
+waypoint 1
+count data-points with [ shade-of? color pink ]
+17
+1
+11
+
+MONITOR
+275
+10
+344
+55
+waypoint 2
+count data-points with [ shade-of? color magenta ]
+17
+1
+11
+
+MONITOR
+344
+10
+413
+55
+waypoint 3
+count data-points with [ shade-of? color violet ]
+17
+1
+11
+
+MONITOR
+413
+10
+482
+55
+waypoint 4
+count data-points with [ shade-of? color blue ]
+17
+1
+11
+
+MONITOR
+482
+10
+551
+55
+waypoint 5
+count data-points with [ shade-of? color sky ]
+17
+1
+11
+
+MONITOR
+324
+241
+438
+286
+average
+mean [ wpfitness ] of genomes
+2
+1
+11
+
+MONITOR
+438
+241
+551
+286
+worst
+max [ wpfitness ] of genomes
+2
+1
+11
+
+MONITOR
+206
+241
+324
+286
+best
+min [ wpfitness ] of genomes
+2
+1
+11
+
+SLIDER
+559
+761
+731
+794
+max-verocity
+max-verocity
+1
+10
+5.0
+0.5
+1
+m/s
+HORIZONTAL
+
+SLIDER
+559
+794
+731
+827
+acceleration
+acceleration
+1
+5
+2.0
+0.5
+1
+m/s2
+HORIZONTAL
+
+SLIDER
+559
+827
+731
+860
+idling-time
+idling-time
+0
+5
+2.0
+0.5
+1
+s
+HORIZONTAL
+
+MONITOR
+206
+719
+275
+764
+time 1
+time1
+2
+1
+11
+
+PLOT
+206
+525
+551
+719
+flight-time-plot
+time
+flight-time
+0.0
+10.0
+0.0
+10.0
+true
+true
+"" ""
+PENS
+"UAV-1" 1.0 0 -2064490 true "" ""
+"UAV-2" 1.0 0 -5825686 true "" ""
+"UAV-3" 1.0 0 -8630108 true "" ""
+"UAV-4" 1.0 0 -13345367 true "" ""
+"UAV-5" 1.0 0 -13791810 true "" ""
+
+MONITOR
+275
+719
+344
+764
+time 2
+time2
+2
+1
+11
+
+MONITOR
+344
+719
+413
+764
+time 3
+time3
+2
+1
+11
+
+MONITOR
+413
+719
+482
+764
+time 4
+time4
+2
+1
+11
+
+MONITOR
+482
+719
+551
+764
+time 5
+time5
+2
+1
+11
+
+TEXTBOX
+561
+10
+748
+28
+=== Environment setting ===
+11
+0.0
+1
+
+TEXTBOX
+567
+227
+732
+255
+=== Clustering setting ===
+11
+0.0
+1
+
+TEXTBOX
+558
+362
+744
+390
+=== TSP algorithm setting ===
+11
+0.0
+1
+
+TEXTBOX
+577
+745
+727
+763
+==== UAV setting ====
+11
+0.0
+1
+
+CHOOSER
+559
+380
+731
+425
+fitness?
+fitness?
+"distance" "time"
+0
+
+PLOT
+0
+449
+200
+599
+data-points-plot
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"x" 1.0 0 -16777216 true "" ""
+"y" 1.0 0 -7500403 true "" ""
+"z" 1.0 0 -2674135 true "" ""
+"pitch" 1.0 0 -955883 true "" ""
+"heading" 1.0 0 -6459832 true "" ""
+"roll" 1.0 0 -1184463 true "" ""
+
+@#$#@#$#@
+## WHAT IS IT?
+
+
+
+## HOW IT WORKS
+
+
+
+## HOW TO USE IT
+
+
+## THINGS TO NOTICE
+
+
+
+## THINGS TO TRY
+
+
+
+## EXTENFDING THE MODEL
+
+
+
+## CREDITS AND REFERENCES
+@#$#@#$#@
+default
+true
+0
+Polygon -7500403 true true 150 5 40 250 150 205 260 250
+
+airplane
+true
+0
+Polygon -7500403 true true 150 0 135 15 120 60 120 105 15 165 15 195 120 180 135 240 105 270 120 285 150 270 180 285 210 270 165 240 180 180 285 195 285 165 180 105 180 60 165 15
+
+ant 2
+true
+0
+Polygon -7500403 true true 150 19 120 30 120 45 130 66 144 81 127 96 129 113 144 134 136 185 121 195 114 217 120 255 135 270 165 270 180 255 188 218 181 195 165 184 157 134 170 115 173 95 156 81 171 66 181 42 180 30
+Polygon -7500403 true true 150 167 159 185 190 182 225 212 255 257 240 212 200 170 154 172
+Polygon -7500403 true true 161 167 201 150 237 149 281 182 245 140 202 137 158 154
+Polygon -7500403 true true 155 135 185 120 230 105 275 75 233 115 201 124 155 150
+Line -7500403 true 120 36 75 45
+Line -7500403 true 75 45 90 15
+Line -7500403 true 180 35 225 45
+Line -7500403 true 225 45 210 15
+Polygon -7500403 true true 145 135 115 120 70 105 25 75 67 115 99 124 145 150
+Polygon -7500403 true true 139 167 99 150 63 149 19 182 55 140 98 137 142 154
+Polygon -7500403 true true 150 167 141 185 110 182 75 212 45 257 60 212 100 170 146 172
+
+arrow
+true
+0
+Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
+
+box
+false
+0
+Polygon -7500403 true true 150 285 285 225 285 75 150 135
+Polygon -7500403 true true 150 135 15 75 150 15 285 75
+Polygon -7500403 true true 15 75 15 225 150 285 150 135
+Line -16777216 false 150 285 150 135
+Line -16777216 false 150 135 15 75
+Line -16777216 false 150 135 285 75
+
+bug
+true
+0
+Circle -7500403 true true 96 182 108
+Circle -7500403 true true 110 127 80
+Circle -7500403 true true 110 75 80
+Line -7500403 true 150 100 80 30
+Line -7500403 true 150 100 220 30
+
+butterfly
+true
+0
+Polygon -7500403 true true 150 165 209 199 225 225 225 255 195 270 165 255 150 240
+Polygon -7500403 true true 150 165 89 198 75 225 75 255 105 270 135 255 150 240
+Polygon -7500403 true true 139 148 100 105 55 90 25 90 10 105 10 135 25 180 40 195 85 194 139 163
+Polygon -7500403 true true 162 150 200 105 245 90 275 90 290 105 290 135 275 180 260 195 215 195 162 165
+Polygon -16777216 true false 150 255 135 225 120 150 135 120 150 105 165 120 180 150 165 225
+Circle -16777216 true false 135 90 30
+Line -16777216 false 150 105 195 60
+Line -16777216 false 150 105 105 60
+
+car
+false
+0
+Polygon -7500403 true true 300 180 279 164 261 144 240 135 226 132 213 106 203 84 185 63 159 50 135 50 75 60 0 150 0 165 0 225 300 225 300 180
+Circle -16777216 true false 180 180 90
+Circle -16777216 true false 30 180 90
+Polygon -16777216 true false 162 80 132 78 134 135 209 135 194 105 189 96 180 89
+Circle -7500403 true true 47 195 58
+Circle -7500403 true true 195 195 58
+
+circle
+false
+0
+Circle -7500403 true true 0 0 300
+
+circle 2
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+
+cow
+false
+0
+Polygon -7500403 true true 200 193 197 249 179 249 177 196 166 187 140 189 93 191 78 179 72 211 49 209 48 181 37 149 25 120 25 89 45 72 103 84 179 75 198 76 252 64 272 81 293 103 285 121 255 121 242 118 224 167
+Polygon -7500403 true true 73 210 86 251 62 249 48 208
+Polygon -7500403 true true 25 114 16 195 9 204 23 213 25 200 39 123
+
+cylinder
+false
+0
+Circle -7500403 true true 0 0 300
+
+dot
+false
+0
+Circle -7500403 true true 90 90 120
+
+face happy
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 255 90 239 62 213 47 191 67 179 90 203 109 218 150 225 192 218 210 203 227 181 251 194 236 217 212 240
+
+face neutral
+false
+0
+Circle -7500403 true true 8 7 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Rectangle -16777216 true false 60 195 240 225
+
+face sad
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 168 90 184 62 210 47 232 67 244 90 220 109 205 150 198 192 205 210 220 227 242 251 229 236 206 212 183
+
+fish
+false
+0
+Polygon -1 true false 44 131 21 87 15 86 0 120 15 150 0 180 13 214 20 212 45 166
+Polygon -1 true false 135 195 119 235 95 218 76 210 46 204 60 165
+Polygon -1 true false 75 45 83 77 71 103 86 114 166 78 135 60
+Polygon -7500403 true true 30 136 151 77 226 81 280 119 292 146 292 160 287 170 270 195 195 210 151 212 30 166
+Circle -16777216 true false 215 106 30
+
+flag
+false
+0
+Rectangle -7500403 true true 60 15 75 300
+Polygon -7500403 true true 90 150 270 90 90 30
+Line -7500403 true 75 135 90 135
+Line -7500403 true 75 45 90 45
+
+flower
+false
+0
+Polygon -10899396 true false 135 120 165 165 180 210 180 240 150 300 165 300 195 240 195 195 165 135
+Circle -7500403 true true 85 132 38
+Circle -7500403 true true 130 147 38
+Circle -7500403 true true 192 85 38
+Circle -7500403 true true 85 40 38
+Circle -7500403 true true 177 40 38
+Circle -7500403 true true 177 132 38
+Circle -7500403 true true 70 85 38
+Circle -7500403 true true 130 25 38
+Circle -7500403 true true 96 51 108
+Circle -16777216 true false 113 68 74
+Polygon -10899396 true false 189 233 219 188 249 173 279 188 234 218
+Polygon -10899396 true false 180 255 150 210 105 210 75 240 135 240
+
+house
+false
+0
+Rectangle -7500403 true true 45 120 255 285
+Rectangle -16777216 true false 120 210 180 285
+Polygon -7500403 true true 15 120 150 15 285 120
+Line -16777216 false 30 120 270 120
+
+leaf
+false
+0
+Polygon -7500403 true true 150 210 135 195 120 210 60 210 30 195 60 180 60 165 15 135 30 120 15 105 40 104 45 90 60 90 90 105 105 120 120 120 105 60 120 60 135 30 150 15 165 30 180 60 195 60 180 120 195 120 210 105 240 90 255 90 263 104 285 105 270 120 285 135 240 165 240 180 270 195 240 210 180 210 165 195
+Polygon -7500403 true true 135 195 135 240 120 255 105 255 105 285 135 285 165 240 165 195
+
+line
+true
+0
+Line -7500403 true 150 0 150 300
+
+line half
+true
+0
+Line -7500403 true 150 0 150 150
+
+mouse top
+true
+0
+Polygon -7500403 true true 144 238 153 255 168 260 196 257 214 241 237 234 248 243 237 260 199 278 154 282 133 276 109 270 90 273 83 283 98 279 120 282 156 293 200 287 235 273 256 254 261 238 252 226 232 221 211 228 194 238 183 246 168 246 163 232
+Polygon -7500403 true true 120 78 116 62 127 35 139 16 150 4 160 16 173 33 183 60 180 80
+Polygon -7500403 true true 119 75 179 75 195 105 190 166 193 215 165 240 135 240 106 213 110 165 105 105
+Polygon -7500403 true true 167 69 184 68 193 64 199 65 202 74 194 82 185 79 171 80
+Polygon -7500403 true true 133 69 116 68 107 64 101 65 98 74 106 82 115 79 129 80
+Polygon -16777216 true false 163 28 171 32 173 40 169 45 166 47
+Polygon -16777216 true false 137 28 129 32 127 40 131 45 134 47
+Polygon -16777216 true false 150 6 143 14 156 14
+Line -7500403 true 161 17 195 10
+Line -7500403 true 160 22 187 20
+Line -7500403 true 160 22 201 31
+Line -7500403 true 140 22 99 31
+Line -7500403 true 140 22 113 20
+Line -7500403 true 139 17 105 10
+
+pentagon
+false
+0
+Polygon -7500403 true true 150 15 15 120 60 285 240 285 285 120
+
+person
+false
+0
+Circle -7500403 true true 110 5 80
+Polygon -7500403 true true 105 90 120 195 90 285 105 300 135 300 150 225 165 300 195 300 210 285 180 195 195 90
+Rectangle -7500403 true true 127 79 172 94
+Polygon -7500403 true true 195 90 240 150 225 180 165 105
+Polygon -7500403 true true 105 90 60 150 75 180 135 105
+
+plant
+false
+0
+Rectangle -7500403 true true 135 90 165 300
+Polygon -7500403 true true 135 255 90 210 45 195 75 255 135 285
+Polygon -7500403 true true 165 255 210 210 255 195 225 255 165 285
+Polygon -7500403 true true 135 180 90 135 45 120 75 180 135 210
+Polygon -7500403 true true 165 180 165 210 225 180 255 120 210 135
+Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
+Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
+Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
+
+square
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+
+square 2
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+Rectangle -16777216 true false 60 60 240 240
+
+star
+false
+0
+Polygon -7500403 true true 151 1 185 108 298 108 207 175 242 282 151 216 59 282 94 175 3 108 116 108
+
+tank
+true
+0
+Rectangle -7500403 true true 144 0 159 105
+Rectangle -6459832 true false 195 45 255 255
+Rectangle -16777216 false false 195 45 255 255
+Rectangle -6459832 true false 45 45 105 255
+Rectangle -16777216 false false 45 45 105 255
+Line -16777216 false 45 75 255 75
+Line -16777216 false 45 105 255 105
+Line -16777216 false 45 60 255 60
+Line -16777216 false 45 240 255 240
+Line -16777216 false 45 225 255 225
+Line -16777216 false 45 195 255 195
+Line -16777216 false 45 150 255 150
+Polygon -7500403 true true 90 60 60 90 60 240 120 255 180 255 240 240 240 90 210 60
+Rectangle -16777216 false false 135 105 165 120
+Polygon -16777216 false false 135 120 105 135 101 181 120 225 149 234 180 225 199 182 195 135 165 120
+Polygon -16777216 false false 240 90 210 60 211 246 240 240
+Polygon -16777216 false false 60 90 90 60 89 246 60 240
+Polygon -16777216 false false 89 247 116 254 183 255 211 246 211 237 89 236
+Rectangle -16777216 false false 90 60 210 90
+Rectangle -16777216 false false 143 0 158 105
+
+target
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+Circle -7500403 true true 60 60 180
+Circle -16777216 true false 90 90 120
+Circle -7500403 true true 120 120 60
+
+tree
+false
+0
+Circle -7500403 true true 118 3 94
+Rectangle -6459832 true false 120 195 180 300
+Circle -7500403 true true 65 21 108
+Circle -7500403 true true 116 41 127
+Circle -7500403 true true 45 90 120
+Circle -7500403 true true 104 74 152
+
+triangle
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+
+triangle 2
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+Polygon -16777216 true false 151 99 225 223 75 224
+
+truck
+false
+0
+Rectangle -7500403 true true 4 45 195 187
+Polygon -7500403 true true 296 193 296 150 259 134 244 104 208 104 207 194
+Rectangle -1 true false 195 60 195 105
+Polygon -16777216 true false 238 112 252 141 219 141 218 112
+Circle -16777216 true false 234 174 42
+Rectangle -7500403 true true 181 185 214 194
+Circle -16777216 true false 144 174 42
+Circle -16777216 true false 24 174 42
+Circle -7500403 false true 24 174 42
+Circle -7500403 false true 144 174 42
+Circle -7500403 false true 234 174 42
+
+turtle
+true
+0
+Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
+Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
+Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
+Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
+Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
+Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+wheel
+false
+0
+Circle -7500403 true true 3 3 294
+Circle -16777216 true false 30 30 240
+Line -7500403 true 150 285 150 15
+Line -7500403 true 15 150 285 150
+Circle -7500403 true true 120 120 60
+Line -7500403 true 216 40 79 269
+Line -7500403 true 40 84 269 221
+Line -7500403 true 40 216 269 79
+Line -7500403 true 84 40 221 269
+
+x
+false
+0
+Polygon -7500403 true true 270 75 225 30 30 225 75 270
+Polygon -7500403 true true 30 75 75 30 270 225 225 270
+@#$#@#$#@
+NetLogo 3D 6.2.0
+@#$#@#$#@
+@#$#@#$#@
+@#$#@#$#@
+<experiments>
+  <experiment name="ver2.5_GA_ex" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints
+K-means-go
+setup-GA</setup>
+    <go>go</go>
+    <exitCondition>ticks = 1000</exitCondition>
+    <metric>best1</metric>
+    <enumeratedValueSet variable="step-size">
+      <value value="0.9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-size">
+      <value value="50"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="8"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-episodes">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="exploration-%">
+      <value value="0.3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="greedy-algorithm?">
+      <value value="false"/>
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="discount">
+      <value value="0.8"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="ver2.5_GA_tournament-size_mutation-rate_repeat-mutation" repetitions="10" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints
+K-means-go
+setup-GA</setup>
+    <go>go</go>
+    <exitCondition>ticks = 3000</exitCondition>
+    <metric>best1</metric>
+    <enumeratedValueSet variable="step-size">
+      <value value="0.9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-size">
+      <value value="50"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="8"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="repeat-mutation" first="1" step="1" last="5"/>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-episodes">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="exploration-%">
+      <value value="0.3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="greedy-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="mutation-rate" first="5" step="5" last="30"/>
+    <enumeratedValueSet variable="discount">
+      <value value="0.8"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="ver2.6_GA_NN_ex" repetitions="10" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="1000"/>
+    <metric>best1</metric>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="8"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;two point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="true"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.3_threshold_disaster=2_ex" repetitions="1" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="200"/>
+    <metric>mean [ wpfitness ] of genomes</metric>
+    <metric>max [ wpfitness ] of genomes</metric>
+    <metric>min [ wpfitness ] of genomes</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+      <value value="0.7"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.3_threshold_disaster=3_ex" repetitions="1" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="200"/>
+    <metric>mean [ wpfitness ] of genomes</metric>
+    <metric>max [ wpfitness ] of genomes</metric>
+    <metric>min [ wpfitness ] of genomes</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+      <value value="0.7"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.3_threshold_disaster=4_ex" repetitions="1" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="200"/>
+    <metric>mean [ wpfitness ] of genomes</metric>
+    <metric>max [ wpfitness ] of genomes</metric>
+    <metric>min [ wpfitness ] of genomes</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+      <value value="0.7"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.4_100times_Bigcity_ex" repetitions="100" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="150"/>
+    <metric>5 * (max [ wpfitness ] of genomes)</metric>
+    <metric>5 * (min [ wpfitness ] of genomes)</metric>
+    <metric>5 * (mean [ wpfitness ] of genomes)</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+      <value value="&quot;K-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.4_Bigcity_ex" repetitions="1" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="150"/>
+    <metric>best1</metric>
+    <metric>best2</metric>
+    <metric>best3</metric>
+    <metric>best4</metric>
+    <metric>best5</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.5_NN_ex" repetitions="100" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="1000"/>
+    <metric>best1</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;K-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;distance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Ver3.4_100times_Bigcity_time_ex" repetitions="100" runMetricsEveryStep="true">
+    <setup>setup-city
+setup-waypoints</setup>
+    <go>go</go>
+    <timeLimit steps="150"/>
+    <metric>5 * (max [ wpfitness ] of genomes)</metric>
+    <metric>5 * (min [ wpfitness ] of genomes)</metric>
+    <metric>5 * (mean [ wpfitness ] of genomes)</metric>
+    <enumeratedValueSet variable="fuzzyness">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="nearest-neighbor?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repetition-limit?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genomes-num">
+      <value value="300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-ycor">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="seed">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="acceleration">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="waypoint-clustering">
+      <value value="&quot;Fuzzy C-means&quot;"/>
+      <value value="&quot;K-means&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="launch-xcor">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Crossover?">
+      <value value="&quot;one point&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="repeat-mutation">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="tournament-rate">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="threshold">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-uavs">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="disaster-area">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fitness?">
+      <value value="&quot;time&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="idling-time">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mutation-rate">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-verocity">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="#-of-repetitions">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="genetic-algorithm?">
+      <value value="false"/>
+    </enumeratedValueSet>
+  </experiment>
+</experiments>
+@#$#@#$#@
+@#$#@#$#@
+default
+0.0
+-0.2 0 0.0 1.0
+0.0 1 1.0 0.0
+0.2 0 0.0 1.0
+link direction
+true
+0
+Line -7500403 true 150 150 90 180
+Line -7500403 true 150 150 210 180
+
+path
+0.0
+-0.2 0 0.0 1.0
+0.0 1 1.0 0.0
+0.2 0 0.0 1.0
+link direction
+true
+0
+@#$#@#$#@
+0
+@#$#@#$#@
