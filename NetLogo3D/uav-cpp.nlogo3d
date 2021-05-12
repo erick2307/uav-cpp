@@ -235,7 +235,7 @@ end
 
 to setup-waypoints
 
-  random-seed new-seed
+  ;random-seed new-seed
   set-default-shape data-points "circle"
   set-default-shape centroids "x"
   set-default-shape links "path"
@@ -538,7 +538,7 @@ to go
   ask uavs [ set my-path [wppath] of my-winner ]
   clear-drawing
   foreach [who] of uavs [ ?1 -> draw-shortest-path ?1 ]
-  set time timer
+  ;set time timer
   tick
 end
 
