@@ -83,7 +83,6 @@ globals [
 to setup-city
   ca
   reset-ticks
-  random-seed seed
 
   let x max-pxcor
   let y max-pycor
