@@ -9,4 +9,4 @@ The MTSP is solved using Nearest Neighbor (NN) or Genetic Algorithm (GA).
 Final corrections in paths to avoid obstacles give a resulting path for each UAV balancing flight distance and time among them. 
 
 ## Reference
-Nagasawa, R., Mas, E., Moya, L. & Koshimura, S. (2020). Multi-UAV Path Planning Methodology for Postdisaster Building Damage Surveying. https://doi.org/10.21203/rs.3.rs-129504/v1 (Under Review)
+Nagasawa, R., Mas, E., Moya, L. & Koshimura, S. (2021). Model-based analysis of multi-UAV path planning for surveying postdisaster building damage. Scientific Reports, 11(1), 18588. https://doi.org/10.1038/s41598-021-97804-4
